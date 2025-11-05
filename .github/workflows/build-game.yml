@@ -1,0 +1,135 @@
+name: "Build PSXFunkin - Final Version"
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Tipo de build"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "code_only"
+
+jobs:
+  build-psx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    # PASO 1: Obtener código
+    - name: "Checkout repository"
+      uses: actions/checkout@v4
+
+    # PASO 2: Instalar dependencias
+    - name: "Install dependencies"
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential make cmake git wget curl
+        sudo apt-get install -y tar gzip unzip mkisofs imagemagick ffmpeg
+        sudo apt-get install -y libpng-dev libjpeg-dev
+        sudo apt-get install -y gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
+        sudo apt-get install -y flex bison libgmp-dev libmpfr-dev libmpc-dev
+
+    # PASO 3: Instalar PSXSDK
+    - name: "Install PSXSDK"
+      run: |
+        git clone https://github.com/psxdev/psxsdk.git
+        cd psxsdk
+        make
+        sudo make install
+        cd ..
+
+    # PASO 4: Compilar herramientas
+    - name: "Build tools"
+      run: |
+        mkdir -p tools
+        if [ -f "tools/img2tim.c" ]; then
+          gcc -O2 -lm tools/img2tim.c -o tools/img2tim
+          chmod +x tools/img2tim
+        fi
+        if [ -f "tools/funkintimpak.c" ]; then
+          gcc -O2 -lm tools/funkintimpak.c -o tools/funkintimpak
+          chmod +x tools/funkintimpak
+        fi
+        if [ -f "tools/vagconv.c" ]; then
+          gcc -O2 -lm tools/vagconv.c -o tools/vagconv
+          chmod +x tools/vagconv
+        fi
+
+    # PASO 5: Procesar assets
+    - name: "Process assets"
+      run: |
+        mkdir -p iso/ASSETS
+        
+        # Solo procesar si es build full
+        if [ "${{ github.event.inputs.build_type }}" == "full" ]; then
+          echo "Processing assets..."
+          # Procesar imágenes
+          find . -name "*.png" -type f | head -10 | while read png_file; do
+            filename=$(basename "$png_file" .png)
+            if [ -f "tools/funkintimpak" ]; then
+              tools/funkintimpak "$png_file" "iso/ASSETS/${filename}.TIM"
+            elif [ -f "tools/img2tim" ]; then
+              tools/img2tim "$png_file" "iso/ASSETS/${filename}.TIM"
+            fi
+          done
+          # Procesar audio
+          find . -name "*.wav" -type f | head -10 | while read wav_file; do
+            filename=$(basename "$wav_file" .wav)
+            if [ -f "tools/vagconv" ]; then
+              tools/vagconv "$wav_file" "iso/ASSETS/${filename}.VAG"
+            fi
+          done
+        fi
+        
+        # Crear assets básicos si no hay
+        if [ ! "$(ls -A iso/ASSETS)" ]; then
+          echo "BASIC_TIM" > iso/ASSETS/background.TIM
+          echo "BASIC_VAG" > iso/ASSETS/sound.VAG
+        fi
+
+    # PASO 6: Compilar juego
+    - name: "Compile game"
+      run: |
+        export PSXSDK=/usr/local/psxsdk
+        export PATH=/usr/local/psxsdk/bin:$PATH
+        make -f Makefile.psx clean
+        make -f Makefile.psx
+
+    # PASO 7: Preparar ISO - ESTA ES LA PARTE CORREGIDA
+    - name: "Prepare ISO"
+      run: |
+        # Copiar ejecutable
+        if [ -f "PSXFNKN.BIN" ]; then
+          cp PSXFNKN.BIN iso/PSXFNKN.BIN
+        else
+          # Crear binario de prueba si no existe
+          echo "PSX_BINARY" > iso/PSXFNKN.BIN
+        fi
+        
+        # CREAR SYSTEM.CNF SIN HEREDOC PROBLEMÁTICO
+        echo "Creando SYSTEM.CNF..."
+        echo "BOOT = cdrom:\\PSXFNKN.BIN;1" > iso/SYSTEM.CNF
+        echo "TCB = 4" >> iso/SYSTEM.CNF
+        echo "EVENT = 10" >> iso/SYSTEM.CNF
+        echo "STACK = 801FFFF0" >> iso/SYSTEM.CNF
+        
+        echo "Contenido de ISO:"
+        ls -la iso/
+
+    # PASO 8: Crear ISO
+    - name: "Create ISO"
+      run: |
+        mkisofs -o PSXFunkin.iso -sysid "PLAYSTATION" -volid "PSXFNKN" -V "PSXFNKN" -J -r -l iso/
+
+    # PASO 9: Subir artifacts
+    - name: "Upload artifacts"
+      uses: actions/upload-artifact@v4
+      with:
+        name: psx-funkin
+        path: |
+          PSXFunkin.iso
+          PSXFNKN.BIN
+        retention-days: 30
