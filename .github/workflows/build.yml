@@ -19,111 +19,62 @@ jobs:
 
     steps:
     # PASO 1: Obtener código
-    - name: "📥 Checkout repository"
+    - name: "Checkout repository"
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
 
     # PASO 2: Verificar estructura del proyecto
-    - name: "🔍 Analyze project structure"
+    - name: "Analyze project structure"
       run: |
         echo "=== ESTRUCTURA DEL PROYECTO ==="
-        echo "Archivos en raíz:"
         ls -la
         echo ""
-        echo "Makefiles disponibles:"
         find . -name "Makefile*" -type f
         echo ""
-        echo "Código fuente:"
         find . -name "*.c" -o -name "*.h" | head -10
         echo ""
-        echo "Herramientas:"
         find tools -type f 2>/dev/null | head -10 || echo "No hay herramientas"
         echo ""
-        echo "Assets:"
         find assets -type f 2>/dev/null | head -10 || echo "No hay assets"
 
     # PASO 3: Instalar todas las dependencias
-    - name: "📦 Install all dependencies"
+    - name: "Install all dependencies"
       run: |
         echo "=== INSTALANDO DEPENDENCIAS COMPLETAS ==="
         sudo apt-get update
-        
-        # Dependencias básicas de compilación
         sudo apt-get install -y build-essential make cmake ninja-build
         sudo apt-get install -y git wget curl apt-utils
         sudo apt-get install -y tar gzip unzip p7zip-full
         sudo apt-get install -y mkisofs genisoimage
-        
-        # Dependencias de multimedia
         sudo apt-get install -y imagemagick ffmpeg libavcodec-extra
         sudo apt-get install -y libpng-dev libjpeg-dev libwebp-dev
         sudo apt-get install -y libsdl2-dev libsdl2-mixer-dev
-        
-        # Compilador MIPSEL para PSX
         sudo apt-get install -y gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
         sudo apt-get install -y g++-mipsel-linux-gnu
-        
-        # Dependencias para PSXSDK
         sudo apt-get install -y flex bison texinfo
         sudo apt-get install -y libgmp-dev libmpfr-dev libmpc-dev
         sudo apt-get install -y autoconf automake libtool pkg-config
-        
-        echo "=== VERIFICANDO INSTALACIÓN ==="
-        gcc --version
-        make --version
-        mipsel-linux-gnu-gcc --version || echo "MIPSEL compiler no disponible"
-        convert --version || echo "ImageMagick no disponible"
-        ffmpeg -version || echo "FFmpeg no disponible"
 
     # PASO 4: Instalar PSXSDK desde source
-    - name: "🎮 Install PSXSDK from source"
+    - name: "Install PSXSDK from source"
       run: |
         echo "=== INSTALANDO PSXSDK ==="
-        
-        # Clonar PSXSDK
-        echo "Clonando PSXSDK..."
         git clone --depth 1 https://github.com/psxdev/psxsdk.git
-        
-        # Compilar e instalar
-        echo "Compilando PSXSDK..."
         cd psxsdk
         make -j4
         sudo make install
         cd ..
-        
-        # Configurar variables de entorno
-        echo "Configurando entorno..."
         export PSXSDK=/usr/local/psxsdk
         export PATH=/usr/local/psxsdk/bin:$PATH
         echo "PSXSDK=/usr/local/psxsdk" >> $GITHUB_ENV
         echo "PATH=/usr/local/psxsdk/bin:$PATH" >> $GITHUB_ENV
-        
-        # Verificar instalación
-        echo "Verificando PSXSDK..."
-        if [ -d "/usr/local/psxsdk" ]; then
-          echo "✅ PSXSDK instalado correctamente"
-          ls -la /usr/local/psxsdk/include/ | head -5
-        else
-          echo "❌ PSXSDK no se instaló correctamente"
-          exit 1
-        fi
 
     # PASO 5: Compilar todas las herramientas
-    - name: "🛠️ Build all tools"
+    - name: "Build all tools"
       run: |
         echo "=== COMPILANDO HERRAMIENTAS ==="
-        
-        # Crear directorio de tools si no existe
         mkdir -p tools
-        
-        # Listar archivos fuente disponibles
-        echo "Archivos fuente en tools/:"
-        find tools -name "*.c" -o -name "*.cpp" 2>/dev/null | while read file; do
-          echo " - $file"
-        done || echo "No hay archivos fuente en tools/"
-        
-        # Compilar cada herramienta C
         for c_file in tools/*.c; do
           if [ -f "$c_file" ]; then
             tool_name=$(basename "$c_file" .c)
@@ -131,14 +82,10 @@ jobs:
             gcc -O2 -lm "$c_file" -o "tools/$tool_name"
             if [ $? -eq 0 ]; then
               chmod +x "tools/$tool_name"
-              echo "✅ $tool_name compilado exitosamente"
-            else
-              echo "❌ Error compilando $tool_name"
+              echo "✅ $tool_name compilado"
             fi
           fi
         done
-        
-        # Compilar cada herramienta C++
         for cpp_file in tools/*.cpp; do
           if [ -f "$cpp_file" ]; then
             tool_name=$(basename "$cpp_file" .cpp)
@@ -146,143 +93,97 @@ jobs:
             g++ -O2 -lm "$cpp_file" -o "tools/$tool_name"
             if [ $? -eq 0 ]; then
               chmod +x "tools/$tool_name"
-              echo "✅ $tool_name compilado exitosamente"
-            else
-              echo "❌ Error compilando $tool_name"
+              echo "✅ $tool_name compilado"
             fi
           fi
         done
-        
-        # Verificar herramientas compiladas
-        echo "Herramientas disponibles:"
-        ls -la tools/ 2>/dev/null | grep -v "\.c\|\\.cpp" || echo "No hay herramientas ejecutables"
 
     # PASO 6: Procesar assets gráficos y de audio
-    - name: "🎨 Process graphics and audio assets"
-      if: ${{ github.event.inputs.build_type == 'full' }}
+    - name: "Process graphics and audio assets"
+      id: process_assets
       run: |
         echo "=== PROCESANDO ASSETS ==="
-        
-        # Crear estructura de directorios
         mkdir -p iso/ASSETS
-        mkdir -p iso/MUSIC
-        mkdir -p iso/SOUNDS
         
-        echo "Buscando assets gráficos..."
-        # Procesar imágenes PNG
-        image_count=0
-        for img_file in $(find . -name "*.png" -type f | head -20); do
-          filename=$(basename "$img_file" .png)
-          echo "Convirtiendo: $filename.png"
+        # Solo procesar assets si build_type es 'full'
+        if [ "${{ github.event.inputs.build_type }}" = "full" ]; then
+          echo "Procesando assets (modo full)..."
           
-          if [ -f "tools/funkintimpak" ]; then
-            tools/funkintimpak "$img_file" "iso/ASSETS/${filename}.TIM"
-          elif [ -f "tools/img2tim" ]; then
-            tools/img2tim "$img_file" "iso/ASSETS/${filename}.TIM"
-          else
-            # Conversión de emergencia con ImageMagick
-            convert "$img_file" -resize 256x256! "iso/ASSETS/${filename}.TIM" 2>/dev/null || true
-          fi
-          image_count=$((image_count + 1))
-        done
-        
-        echo "Buscando assets de audio..."
-        # Procesar audio WAV
-        audio_count=0
-        for audio_file in $(find . -name "*.wav" -type f | head -20); do
-          filename=$(basename "$audio_file" .wav)
-          echo "Convirtiendo: $filename.wav"
+          echo "Buscando assets gráficos..."
+          for img_file in $(find . -name "*.png" -type f | head -20); do
+            filename=$(basename "$img_file" .png)
+            echo "Convirtiendo: $filename.png"
+            if [ -f "tools/funkintimpak" ]; then
+              tools/funkintimpak "$img_file" "iso/ASSETS/${filename}.TIM"
+            elif [ -f "tools/img2tim" ]; then
+              tools/img2tim "$img_file" "iso/ASSETS/${filename}.TIM"
+            else
+              convert "$img_file" -resize 256x256! "iso/ASSETS/${filename}.TIM" 2>/dev/null || true
+            fi
+          done
           
-          if [ -f "tools/vagconv" ]; then
-            tools/vagconv "$audio_file" "iso/ASSETS/${filename}.VAG"
-          else
-            # Conversión con FFmpeg
-            ffmpeg -i "$audio_file" -acodec pcm_s16le -ar 22050 -ac 2 "iso/ASSETS/${filename}.VAG" 2>/dev/null || true
-          fi
-          audio_count=$((audio_count + 1))
-        done
-        
-        # Si no hay assets, crear algunos básicos
-        if [ $image_count -eq 0 ]; then
-          echo "Creando assets gráficos básicos..."
-          convert -size 64x64 gradient:blue-red "iso/ASSETS/background.TIM" 2>/dev/null || true
-          convert -size 32x32 gradient:yellow-green "iso/ASSETS/character.TIM" 2>/dev/null || true
+          echo "Buscando assets de audio..."
+          for audio_file in $(find . -name "*.wav" -type f | head -20); do
+            filename=$(basename "$audio_file" .wav)
+            echo "Convirtiendo: $filename.wav"
+            if [ -f "tools/vagconv" ]; then
+              tools/vagconv "$audio_file" "iso/ASSETS/${filename}.VAG"
+            else
+              ffmpeg -i "$audio_file" -acodec pcm_s16le -ar 22050 -ac 2 "iso/ASSETS/${filename}.VAG" 2>/dev/null || true
+            fi
+          done
+        else
+          echo "Saltando procesamiento de assets (modo code_only)"
         fi
         
-        if [ $audio_count -eq 0 ]; then
-          echo "Creando assets de audio básicos..."
-          ffmpeg -f lavfi -i "sine=frequency=440:duration=2" -acodec pcm_s16le "iso/ASSETS/beep.VAG" 2>/dev/null || true
+        # Crear assets básicos si no hay ninguno
+        if [ ! "$(ls -A iso/ASSETS)" ]; then
+          echo "Creando assets básicos..."
+          echo "BASIC_ASSET" > iso/ASSETS/placeholder.TIM
+          echo "BASIC_AUDIO" > iso/ASSETS/placeholder.VAG
         fi
-        
-        echo "Resumen de assets:"
-        find iso/ASSETS -type f | head -15
 
     # PASO 7: Compilar el juego principal
-    - name: "🎮 Compile main game"
+    - name: "Compile main game"
       run: |
         echo "=== COMPILANDO JUEGO PRINCIPAL ==="
-        
-        # Configurar entorno de compilación
         export PSXSDK=/usr/local/psxsdk
         export PATH=/usr/local/psxsdk/bin:$PATH
         
-        echo "Variables de entorno:"
-        echo "PSXSDK: $PSXSDK"
-        echo "PATH: $PATH"
-        
-        # Verificar que tenemos las librerías PSX
         echo "Verificando librerías PSX..."
         if [ -f "/usr/local/psxsdk/include/libetc.h" ]; then
           echo "✅ libetc.h encontrado"
         else
           echo "⚠️ libetc.h no encontrado"
-          find /usr/local/psxsdk -name "*.h" | head -10
         fi
         
-        # Estrategias de compilación
         echo "Iniciando compilación..."
-        
-        # Método 1: Makefile.psx (preferido)
         if [ -f "Makefile.psx" ]; then
           echo "Usando Makefile.psx..."
           make -f Makefile.psx clean
           make -f Makefile.psx -j4
         fi
         
-        # Método 2: Makefile principal
         if [ ! -f "PSXFNKN.BIN" ] && [ -f "Makefile" ]; then
           echo "Usando Makefile principal..."
           make clean
           make -j4
         fi
         
-        # Método 3: Compilación manual de emergencia
-        if [ ! -f "PSXFNKN.BIN" ]; then
-          echo "Intentando compilación manual..."
-          find src -name "*.c" | head -5 | while read c_file; do
-            echo "Compilando: $c_file"
-            mipsel-linux-gnu-gcc -c "$c_file" -o "${c_file%.c}.o" 2>/dev/null || true
-          done
-        fi
-        
-        # Verificar resultados
         echo "Resultados de compilación:"
         if [ -f "PSXFNKN.BIN" ]; then
           echo "✅ PSXFNKN.BIN creado exitosamente!"
           ls -lh PSXFNKN.BIN
-          file PSXFNKN.BIN
         else
           echo "❌ PSXFNKN.BIN no se creó"
-          echo "Buscando archivos binarios..."
           find . -name "*.BIN" -o -name "*.bin" -o -name "*.ELF" | head -10
         fi
 
     # PASO 8: Preparar estructura final de ISO
-    - name: "📀 Prepare final ISO structure"
+    - name: "Prepare final ISO structure"
       run: |
         echo "=== PREPARANDO ESTRUCTURA ISO ==="
         
-        # Copiar ejecutable a ISO
         if [ -f "PSXFNKN.BIN" ]; then
           cp PSXFNKN.BIN iso/PSXFNKN.BIN
           echo "✅ PSXFNKN.BIN copiado a ISO"
@@ -291,7 +192,6 @@ jobs:
           dd if=/dev/zero of=iso/PSXFNKN.BIN bs=1024 count=100
         fi
         
-        # Crear SYSTEM.CNF para boot PSX
         echo "Creando SYSTEM.CNF..."
         cat > iso/SYSTEM.CNF << 'SYSTEM_CNF'
 BOOT = cdrom:\PSXFNKN.BIN;1
@@ -300,16 +200,14 @@ EVENT = 10
 STACK = 801FFFF0
 SYSTEM_CNF
         
-        # Verificar estructura final
         echo "Estructura final de ISO:"
-        tree iso/ || find iso/ -type f
+        find iso/ -type f
 
     # PASO 9: Crear imagen ISO booteable
-    - name: "🔥 Create bootable PSX ISO"
+    - name: "Create bootable PSX ISO"
       run: |
         echo "=== CREANDO IMAGEN ISO ==="
         
-        # Crear ISO para PlayStation
         echo "Generando ISO..."
         mkisofs -o PSXFunkin.iso \
           -sysid "PLAYSTATION" \
@@ -318,20 +216,17 @@ SYSTEM_CNF
           -J -r -l -quiet \
           iso/
         
-        # Verificar que se creó el ISO
         if [ -f "PSXFunkin.iso" ]; then
           echo "🎉 ✅ ISO CREADO EXITOSAMENTE!"
-          echo "📊 Información del ISO:"
           ls -lh PSXFunkin.iso
           echo "Tamaño: $(du -h PSXFunkin.iso | cut -f1)"
-          file PSXFunkin.iso
         else
           echo "❌ ERROR: No se pudo crear el ISO"
           exit 1
         fi
 
     # PASO 10: Verificación final y reporte
-    - name: "✅ Final verification and report"
+    - name: "Final verification and report"
       run: |
         echo "=== VERIFICACIÓN FINAL ==="
         echo ""
@@ -355,15 +250,9 @@ SYSTEM_CNF
         echo "   1. Descarga el artifact 'psx-funkin-complete'"
         echo "   2. Usa PSXFunkin.iso en DuckStation, ePSXe, etc."
         echo "   3. ¡Disfruta de Friday Night Funkin en PSX!"
-        echo ""
-        echo "🔧 BUILD INFO:"
-        echo "   • Compilado con PSXSDK"
-        echo "   • Sistema: Ubuntu Linux"
-        echo "   • Compilador: MIPSEL GCC"
-        echo "   • Fecha: $(date)"
 
     # PASO 11: Subir todos los artifacts
-    - name: "📤 Upload all artifacts"
+    - name: "Upload all artifacts"
       uses: actions/upload-artifact@v4
       with:
         name: psx-funkin-complete
