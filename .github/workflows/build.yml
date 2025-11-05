@@ -1,0 +1,153 @@
+name: "Build PSXFunkin - OFFICIAL"
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Tipo de build"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "code_only"
+
+jobs:
+  build-psx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      # PASO 1: Obtener código
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      # PASO 2: Instalar PSXSDK
+      - name: "Install PSXSDK"
+        run: |
+          echo "INSTALANDO PSXSDK..."
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            make \
+            cmake \
+            git \
+            wget \
+            curl \
+            tar \
+            gzip \
+            unzip \
+            mkisofs \
+            imagemagick \
+            ffmpeg \
+            libpng-dev \
+            libjpeg-dev \
+            gcc-mipsel-linux-gnu \
+            binutils-mipsel-linux-gnu \
+            flex \
+            bison \
+            libgmp-dev \
+            libmpfr-dev \
+            libmpc-dev \
+            texinfo
+          git clone https://github.com/psxdev/psxsdk.git
+          cd psxsdk
+          make
+          sudo make install
+          cd ..
+
+      # PASO 3: Compilar herramientas de assets
+      - name: "Build asset tools"
+        run: |
+          echo "COMPILANDO HERRAMIENTAS..."
+          if [ -f "tools/img2tim.c" ]; then
+            gcc -O2 -lm tools/img2tim.c -o tools/img2tim
+            chmod +x tools/img2tim
+          fi
+          if [ -f "tools/funkintimpak.c" ]; then
+            gcc -O2 -lm tools/funkintimpak.c -o tools/funkintimpak
+            chmod +x tools/funkintimpak
+          fi
+          if [ -f "tools/vagconv.c" ]; then
+            gcc -O2 -lm tools/vagconv.c -o tools/vagconv
+            chmod +x tools/vagconv
+          fi
+
+      # PASO 4: Procesar assets
+      - name: "Process assets"
+        if: ${{ github.event.inputs.build_type == 'full' }}
+        run: |
+          echo "PROCESANDO ASSETS..."
+          mkdir -p iso/ASSETS
+          if find assets/ -name "*.png" 2>/dev/null | head -1; then
+            find assets/ -name "*.png" | while read png_file; do
+              filename=$(basename "$png_file" .png)
+              if [ -f "tools/funkintimpak" ]; then
+                tools/funkintimpak "$png_file" "iso/ASSETS/${filename}.TIM"
+              elif [ -f "tools/img2tim" ]; then
+                tools/img2tim "$png_file" "iso/ASSETS/${filename}.TIM"
+              else
+                convert "$png_file" -resize 256x256! "iso/ASSETS/${filename}.TIM" 2>/dev/null || true
+              fi
+            done
+          else
+            echo "TIM_PLACEHOLDER" > iso/ASSETS/funkin.tim
+          fi
+          if find assets/ -name "*.wav" 2>/dev/null | head -1; then
+            find assets/ -name "*.wav" | while read wav_file; do
+              filename=$(basename "$wav_file" .wav)
+              if [ -f "tools/vagconv" ]; then
+                tools/vagconv "$wav_file" "iso/ASSETS/${filename}.VAG"
+              else
+                ffmpeg -i "$wav_file" -acodec pcm_s16le -ar 22050 "iso/ASSETS/${filename}.VAG" 2>/dev/null || true
+              fi
+            done
+          fi
+
+      # PASO 5: Compilar el juego
+      - name: "Compile game"
+        run: |
+          echo "COMPILANDO JUEGO..."
+          export PSXSDK=/usr/local/psxsdk
+          export PATH=/usr/local/psxsdk/bin:$PATH
+          make -f Makefile.psx clean
+          make -f Makefile.psx
+          if [ -f "PSXFNKN.BIN" ]; then
+            cp PSXFNKN.BIN iso/PSXFNKN.BIN
+          fi
+
+      # PASO 6: Preparar ISO
+      - name: "Prepare ISO structure"
+        run: |
+          echo "PREPARANDO ISO..."
+          if [ ! -f "iso/PSXFNKN.BIN" ] && [ -f "PSXFNKN.BIN" ]; then
+            cp PSXFNKN.BIN iso/PSXFNKN.BIN
+          fi
+          cat > iso/SYSTEM.CNF << 'EOF'
+BOOT = cdrom:\PSXFNKN.BIN;1
+TCB = 4
+EVENT = 10
+STACK = 801FFFF0
+EOF
+
+      # PASO 7: Crear imagen ISO
+      - name: "Create PSX ISO"
+        run: |
+          echo "CREANDO ISO..."
+          mkisofs -o PSXFunkin.iso \
+            -sysid "PLAYSTATION" \
+            -volid "PSXFNKN" \
+            -V "PSXFNKN" \
+            -J -r -l \
+            iso/
+
+      # PASO 8: Subir artifacts
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: psx-funkin
+          path: |
+            PSXFunkin.iso
+            PSXFNKN.BIN
+            iso/
+          retention-days: 30
